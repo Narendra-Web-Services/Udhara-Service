@@ -17,11 +17,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(default=120, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     api_port: int = Field(default=8080, alias="API_PORT")
-    cors_origins: str = Field(default="http://localhost:8081,http://localhost:19006,http://localhost:3000", alias="CORS_ORIGINS")
+    # cors_origins: str = Field(default="http://localhost:8081,http://localhost:19006,http://localhost:3000", alias="CORS_ORIGINS")
 
-    @property
-    def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+    # @property
+    # def cors_origin_list(self) -> list[str]:
+    #     return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 @lru_cache
