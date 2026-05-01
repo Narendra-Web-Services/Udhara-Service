@@ -6,6 +6,8 @@ This backend is a FastAPI service for a village-based collection and lending wor
 
 The backend uses MongoDB as the primary datastore and exposes all application endpoints under the `/api` prefix, with a separate `/health` endpoint for service checks.
 
+For deployment compatibility, the same application routes are also available without the top-level `/api` prefix when a reverse proxy or hosting platform strips that prefix before forwarding the request.
+
 ## Tech Stack
 
 - FastAPI `0.116.1`
@@ -121,9 +123,9 @@ The backend uses MongoDB as the primary datastore and exposes all application en
 
 ### Auth
 
-- `POST /api/auth` for login
-- `GET /api/auth/admins` to fetch available admin accounts for registration linking
-- `POST /api/auth` for registration on the register router
+- `POST /api/auth/login`
+- `GET /api/auth/register/admins` to fetch available admin accounts for registration linking
+- `POST /api/auth/register`
 
 ### Dashboard
 
