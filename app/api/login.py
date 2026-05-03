@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.collection import Collection
+from uuid import uuid4
 
 from app.api.deps import get_user_collection
 from app.core.security import create_access_token, verify_password
@@ -33,7 +34,10 @@ def login(payload: LoginRequest, collection: Collection = Depends(get_user_colle
         if admin_doc:
             effective_subscription = bool(admin_doc.get("has_subscription", False))
 
-    token = create_access_token(user.id)
+    new_session_id = str(uuid4())
+    collection.update_one({"_id": user.id}, {"$set": {"session_id": new_session_id}})
+
+    token = create_access_token(user.id, new_session_id)
     return AuthResponse(
         access_token=token,
         user=UserPublic(

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.collection import Collection
+from uuid import uuid4
 
 from app.api.deps import get_installment_collection, get_user_collection, get_village_collection
 from app.core.security import create_access_token, hash_password, verify_password
@@ -27,13 +28,13 @@ def register(
     phone_number = payload.phone_number.strip()
 
     existing_user = collection.find_one(
-        {
-            "email": email,
-            "phone_number": phone_number,
-        }
+        {"$or": [{"email": email}, {"phone_number": phone_number}]},
+        {"email": 1, "phone_number": 1},
     )
     if existing_user is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
+        if existing_user.get("email") == email:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This email is already registered.")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This phone number is already registered.")
 
     # For Normal users linked to an admin, verify the admin's password
     if payload.role == "customer" and payload.linked_admin_id:
@@ -59,6 +60,7 @@ def register(
                 detail="Admin password is incorrect. Please ask your admin for the correct password.",
             )
 
+    new_session_id = str(uuid4())
     user_document = {
         "_id": payload.user_id.strip(),
         "full_name": payload.full_name.strip(),
@@ -68,6 +70,7 @@ def register(
         "has_subscription": False,
         "hashed_password": hash_password(payload.password),
         "linked_admin_id": payload.linked_admin_id,
+        "session_id": new_session_id,
     }
     collection.insert_one(user_document)
 
@@ -82,7 +85,7 @@ def register(
         }
     )
 
-    access_token = create_access_token(user_document["_id"])
+    access_token = create_access_token(user_document["_id"], new_session_id)
     return AuthResponse(
         access_token=access_token,
         user=UserPublic(
