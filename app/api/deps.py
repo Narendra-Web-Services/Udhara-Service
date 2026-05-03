@@ -42,6 +42,7 @@ def get_current_user(
     try:
         payload = jwt.decode(credentials.credentials, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
         subject = payload.get("sub")
+        session_id = payload.get("jti")
     except JWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
 
@@ -51,5 +52,8 @@ def get_current_user(
     document = collection.find_one({"_id": subject})
     if document is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    if document.get("session_id") != session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired. Please log in again.")
 
     return UserInDB.from_mongo(document)

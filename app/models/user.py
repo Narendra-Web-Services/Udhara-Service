@@ -83,6 +83,7 @@ class UserInDB(BaseModel):
     hashed_password: str
     linked_admin_id: Optional[str] = None
     allow_collaborators: bool = True
+    session_id: Optional[str] = None
 
     @classmethod
     def from_mongo(cls, document: dict[str, Any]) -> "UserInDB":
