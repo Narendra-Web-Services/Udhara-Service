@@ -2,15 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.collection import Collection
 from uuid import uuid4
 
-from app.api.deps import get_user_collection
+from app.api.deps import get_customer_collection, get_user_collection
+from app.core.access_profile import build_user_public
 from app.core.security import create_access_token, verify_password
-from app.models.user import AuthResponse, LoginRequest, UserInDB, UserPublic
+from app.models.user import AuthResponse, LoginRequest, UserInDB
 
 router = APIRouter(prefix="/login", tags=["login"])
 
 
 @router.post("", response_model=AuthResponse)
-def login(payload: LoginRequest, collection: Collection = Depends(get_user_collection)) -> AuthResponse:
+def login(
+    payload: LoginRequest,
+    collection: Collection = Depends(get_user_collection),
+    customer_collection: Collection = Depends(get_customer_collection),
+) -> AuthResponse:
     identifier = payload.identifier.strip().lower()
     document = collection.find_one(
         {
@@ -27,27 +32,11 @@ def login(payload: LoginRequest, collection: Collection = Depends(get_user_colle
     if not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    # Collaborators inherit the linked admin's subscription status
-    effective_subscription = user.has_subscription
-    if user.role == "customer" and user.linked_admin_id:
-        admin_doc = collection.find_one({"_id": user.linked_admin_id}, {"has_subscription": 1})
-        if admin_doc:
-            effective_subscription = bool(admin_doc.get("has_subscription", False))
-
     new_session_id = str(uuid4())
     collection.update_one({"_id": user.id}, {"$set": {"session_id": new_session_id}})
 
     token = create_access_token(user.id, new_session_id)
     return AuthResponse(
         access_token=token,
-        user=UserPublic(
-            id=user.id,
-            full_name=user.full_name,
-            email=user.email,
-            phone_number=user.phone_number,
-            role=user.role,
-            has_subscription=effective_subscription,
-            linked_admin_id=user.linked_admin_id,
-            allow_collaborators=user.allow_collaborators,
-        ),
+        user=build_user_public(user, collection, customer_collection),
     )

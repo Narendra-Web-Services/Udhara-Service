@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.collection import Collection
 from uuid import uuid4
 
-from app.api.deps import get_installment_collection, get_user_collection, get_village_collection
+from app.api.deps import get_customer_collection, get_user_collection, get_village_collection
 from app.core.security import create_access_token, hash_password, verify_password
-from app.models.user import AuthResponse, RegisterRequest, UserPublic
+from app.core.access_profile import build_user_public
+from app.models.user import AuthResponse, RegisterRequest, UserInDB
 
 router = APIRouter(prefix="/register", tags=["register"])
 
@@ -23,6 +24,7 @@ def register(
     payload: RegisterRequest,
     collection: Collection = Depends(get_user_collection),
     village_collection: Collection = Depends(get_village_collection),
+    customer_collection: Collection = Depends(get_customer_collection),
 ) -> AuthResponse:
     email = payload.email.strip().lower()
     phone_number = payload.phone_number.strip()
@@ -68,6 +70,8 @@ def register(
         "phone_number": phone_number,
         "role": payload.role,
         "has_subscription": False,
+        "subscription_tier": "pending",
+        "billing_period": None,
         "hashed_password": hash_password(payload.password),
         "linked_admin_id": payload.linked_admin_id,
         "session_id": new_session_id,
@@ -86,15 +90,11 @@ def register(
     )
 
     access_token = create_access_token(user_document["_id"], new_session_id)
+    inserted = collection.find_one({"_id": user_document["_id"]})
+    if inserted is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Registration failed.")
+    registered_user = UserInDB.from_mongo(inserted)
     return AuthResponse(
         access_token=access_token,
-        user=UserPublic(
-            id=user_document["_id"],
-            full_name=user_document["full_name"],
-            email=user_document["email"],
-            phone_number=user_document["phone_number"],
-            role=user_document["role"],
-            has_subscription=user_document["has_subscription"],
-            linked_admin_id=user_document["linked_admin_id"],
-        ),
+        user=build_user_public(registered_user, collection, customer_collection),
     )

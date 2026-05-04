@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 PaymentType = Literal["daily", "weekly", "monthly", "yearly"]
+FinanceScope = Literal["daily", "weekly", "monthly", "yearly"]
 InstallmentStatus = Literal["paid", "partial", "skipped", "pending"]
 PaymentMode = Literal["phonepe", "gpay", "cash"]
 
@@ -12,6 +13,7 @@ PaymentMode = Literal["phonepe", "gpay", "cash"]
 class VillageCreate(BaseModel):
     name: str = Field(min_length=2)
     day: str = Field(min_length=3)
+    finance_scope: FinanceScope = "weekly"
 
 
 class VillageUpdate(BaseModel):
@@ -24,6 +26,7 @@ class VillagePublic(BaseModel):
     owner_user_id: str
     name: str
     day: str
+    finance_scope: FinanceScope = "weekly"
     customer_count: int = 0
 
 
@@ -61,6 +64,12 @@ class CustomerPublic(BaseModel):
     external_customer_id: str
     overdue_installments: int = 0
     overdue_amount: float = 0
+    due_this_month_installments: int = 0
+    due_this_month_amount: float = 0
+    due_this_year_installments: int = 0
+    due_this_year_amount: float = 0
+    due_today_installments: int = 0
+    due_today_amount: float = 0
     total_collected: float = 0
     last_collected_at: datetime | None = None
     last_collected_by_name: str | None = None
@@ -126,6 +135,36 @@ class CustomerDetailResponse(BaseModel):
     overdue_amount: float
     calendar: list[InstallmentCalendarEntry]
     collection_history: list[CollectionRecordPublic]
+
+
+class CollectionTimeseriesPoint(BaseModel):
+    """One calendar day of aggregated collections (sum of payment batches)."""
+
+    date: date
+    amount: float
+    count: int = 0
+
+
+class CollectionTransactionRow(BaseModel):
+    """One logical collection (batch) for reporting tables."""
+
+    id: str
+    collected_at: datetime
+    amount_paid: float
+    payment_mode: PaymentMode
+    collected_by_name: str
+    customer_id: str
+    customer_full_name: str
+    village_id: str
+    village_name: str
+    note: str | None = None
+
+
+class CollectionsReportResponse(BaseModel):
+    total_amount: float
+    transaction_count: int
+    series: list[CollectionTimeseriesPoint]
+    transactions: list[CollectionTransactionRow]
 
 
 class InstallmentInDB(BaseModel):

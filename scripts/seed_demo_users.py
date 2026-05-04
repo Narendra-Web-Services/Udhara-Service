@@ -52,6 +52,7 @@ for index, user in enumerate(DEMO_USERS, start=1):
             "owner_user_id": user["_id"],
             "name": f"Village {index}",
             "day": ["Monday", "Tuesday", "Wednesday"][index - 1],
+            "finance_scope": "weekly",
             "created_at": datetime.now(UTC),
             "updated_at": datetime.now(UTC),
         }

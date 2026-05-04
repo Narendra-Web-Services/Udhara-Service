@@ -1,15 +1,18 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.collection import Collection
 
-from app.api.deps import get_collection_record_collection, get_current_user, get_customer_collection, get_installment_collection, get_village_collection
+from app.api.deps import get_collection_record_collection, get_current_user, get_customer_collection, get_installment_collection, get_user_collection, get_village_collection
+from app.core.access_profile import subscription_usage_for_dashboard
+from app.core.finance_scope import villages_mongo_filter
 from app.models.finance import DelayedCustomerPublic
 from app.models.user import DashboardDailyCard, DashboardResponse, DashboardSummaryMetric, UserInDB
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_FINANCE_SCOPES = frozenset({"daily", "weekly", "monthly", "yearly"})
 
 
 def _format_currency(value: int) -> str:
@@ -37,10 +40,31 @@ def _build_daily_values(
     customer_collection: Collection,
     installment_collection: Collection,
     owner_id: str,
+    finance_scope: str,
 ) -> tuple[list[DashboardDailyCard], int, int]:
-    village_documents = list(village_collection.find({"owner_user_id": owner_id}, {"_id": 1, "day": 1}))
-    customer_documents = list(customer_collection.find({"owner_user_id": owner_id}, {"_id": 1, "village_id": 1, "amount_lent": 1}))
-    installment_documents = list(installment_collection.find({"owner_user_id": owner_id}, {"customer_id": 1, "amount_paid": 1}))
+    village_documents = list(village_collection.find(villages_mongo_filter(owner_id, finance_scope), {"_id": 1, "day": 1}))
+    village_ids = [str(v["_id"]) for v in village_documents]
+    if not village_ids:
+        customer_documents: list[dict] = []
+        installment_documents: list[dict] = []
+    else:
+        customer_documents = list(
+            customer_collection.find(
+                {"owner_user_id": owner_id, "village_id": {"$in": village_ids}},
+                {"_id": 1, "village_id": 1, "amount_lent": 1},
+            )
+        )
+        customer_ids = [str(c["_id"]) for c in customer_documents]
+        installment_documents = (
+            list(
+                installment_collection.find(
+                    {"owner_user_id": owner_id, "customer_id": {"$in": customer_ids}},
+                    {"customer_id": 1, "amount_paid": 1},
+                )
+            )
+            if customer_ids
+            else []
+        )
     daily_map: dict[str, dict[str, float]] = {day: {"invested": 0.0, "returns": 0.0} for day in DAYS}
     village_day_by_id = {str(document["_id"]): document.get("day", "") for document in village_documents}
     customer_day_by_id: dict[str, str] = {}
@@ -113,10 +137,20 @@ def _build_delay_summary(
     installment_collection: Collection,
     collection_record_collection: Collection,
     owner_id: str,
+    finance_scope: str,
 ) -> tuple[int, int, list[DelayedCustomerPublic]]:
     now = datetime.now(UTC)
-    villages = list(village_collection.find({"owner_user_id": owner_id}, {"_id": 1, "name": 1}))
-    customers = list(customer_collection.find({"owner_user_id": owner_id}, {"_id": 1, "full_name": 1, "phone_number": 1, "village_id": 1}))
+    villages = list(village_collection.find(villages_mongo_filter(owner_id, finance_scope), {"_id": 1, "name": 1}))
+    village_ids = [str(v["_id"]) for v in villages]
+    if not village_ids:
+        customers: list[dict] = []
+    else:
+        customers = list(
+            customer_collection.find(
+                {"owner_user_id": owner_id, "village_id": {"$in": village_ids}},
+                {"_id": 1, "full_name": 1, "phone_number": 1, "village_id": 1},
+            )
+        )
     customer_ids = [str(customer["_id"]) for customer in customers]
     village_name_by_id = {str(village["_id"]): village.get("name", "Unknown village") for village in villages}
     last_collection_by_customer: dict[str, dict] = {}
@@ -179,17 +213,22 @@ def _build_delay_summary(
 @router.get("", response_model=DashboardResponse)
 def dashboard(
     current_user: UserInDB = Depends(get_current_user),
+    user_collection: Collection = Depends(get_user_collection),
     village_collection: Collection = Depends(get_village_collection),
     customer_collection: Collection = Depends(get_customer_collection),
     installment_collection: Collection = Depends(get_installment_collection),
     collection_record_collection: Collection = Depends(get_collection_record_collection),
+    finance_scope: str = Query(default="weekly", description="Workspace: daily|weekly|monthly|yearly"),
 ) -> DashboardResponse:
+    if finance_scope not in _FINANCE_SCOPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid finance_scope")
     owner_id = current_user.linked_admin_id if (current_user.role == "customer" and current_user.linked_admin_id) else current_user.id
     daily_cards, invested_total, returns_total = _build_daily_values(
         village_collection,
         customer_collection,
         installment_collection,
         owner_id,
+        finance_scope,
     )
     attention_required_count, overdue_amount, delayed_customers = _build_delay_summary(
         village_collection,
@@ -197,13 +236,20 @@ def dashboard(
         installment_collection,
         collection_record_collection,
         owner_id,
+        finance_scope,
     )
 
+    usage = subscription_usage_for_dashboard(current_user, user_collection, customer_collection)
     return DashboardResponse(
         message=f"Welcome back, {current_user.full_name}.",
         user_id=current_user.id,
         role=current_user.role,
-        has_subscription=current_user.has_subscription,
+        has_subscription=usage["has_subscription"],
+        subscription_tier=usage["subscription_tier"],
+        billing_period=usage["billing_period"],
+        customer_usage_used=usage["customer_usage_used"],
+        customer_usage_limit=usage["customer_usage_limit"],
+        subscription_expires_at=usage["subscription_expires_at"],
         summary=_build_summary(invested_total, returns_total),
         daily_cards=daily_cards,
         attention_required_count=attention_required_count,
