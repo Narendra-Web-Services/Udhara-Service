@@ -1,8 +1,12 @@
+from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.finance import DelayedCustomerPublic
+
+SubscriptionTier = Literal["pending", "free", "basic", "pro", "elite", "unlimited"]
+BillingPeriod = Literal["monthly", "yearly"]
 
 
 class LoginRequest(BaseModel):
@@ -30,6 +34,11 @@ class UserPublic(BaseModel):
     has_subscription: bool = False
     linked_admin_id: Optional[str] = None
     allow_collaborators: bool = True
+    subscription_tier: SubscriptionTier = "pending"
+    billing_period: Optional[BillingPeriod] = None
+    customer_usage_used: int = 0
+    customer_usage_limit: int = 2
+    subscription_expires_at: Optional[datetime] = None
 
 
 class AuthResponse(BaseModel):
@@ -64,6 +73,11 @@ class DashboardResponse(BaseModel):
     user_id: str
     role: Literal["admin", "customer"]
     has_subscription: bool
+    subscription_tier: SubscriptionTier = "pending"
+    billing_period: Optional[BillingPeriod] = None
+    customer_usage_used: int = 0
+    customer_usage_limit: int = 2
+    subscription_expires_at: Optional[datetime] = None
     summary: list[DashboardSummaryMetric]
     daily_cards: list[DashboardDailyCard]
     attention_required_count: int = 0
@@ -84,8 +98,22 @@ class UserInDB(BaseModel):
     linked_admin_id: Optional[str] = None
     allow_collaborators: bool = True
     session_id: Optional[str] = None
+    subscription_tier: SubscriptionTier = "pending"
+    billing_period: Optional[BillingPeriod] = None
+    subscription_expires_at: Optional[datetime] = None
 
     @classmethod
     def from_mongo(cls, document: dict[str, Any]) -> "UserInDB":
         payload = {**document, "_id": str(document["_id"])}
+        if "subscription_tier" not in document:
+            payload["subscription_tier"] = "unlimited" if document.get("has_subscription") else "pending"
+        tier = str(payload.get("subscription_tier", "pending"))
+        payload["subscription_tier"] = tier  # type: ignore[assignment]
+        payload["has_subscription"] = tier != "pending"
+        if "billing_period" not in document:
+            payload["billing_period"] = None
+        if "subscription_expires_at" not in document:
+            payload["subscription_expires_at"] = None
+        if "allow_collaborators" not in document:
+            payload["allow_collaborators"] = True
         return cls.model_validate(payload)

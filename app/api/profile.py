@@ -7,14 +7,6 @@ from app.models.user import UserInDB
 router = APIRouter(prefix="/profile", tags=["profile"])
 
 
-class CollaboratorPublic:
-    def __init__(self, id: str, full_name: str, phone_number: str, email: str) -> None:
-        self.id = id
-        self.full_name = full_name
-        self.phone_number = phone_number
-        self.email = email
-
-
 @router.get("/collaborators", response_model=list[dict])
 def list_collaborators(
     current_user: UserInDB = Depends(get_current_user),
@@ -55,3 +47,34 @@ def update_collaborator_settings(
     new_value = not current_user.allow_collaborators
     collection.update_one({"_id": current_user.id}, {"$set": {"allow_collaborators": new_value}})
     return {"allow_collaborators": new_value}
+
+
+@router.delete("/collaborators/{collaborator_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_collaborator(
+    collaborator_id: str,
+    current_user: UserInDB = Depends(get_current_user),
+    collection: Collection = Depends(get_user_collection),
+) -> None:
+    """Permanently remove a worker account linked to this admin."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin accounts can remove collaborators.",
+        )
+    if collaborator_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete your own admin account.",
+        )
+    result = collection.delete_one(
+        {
+            "_id": collaborator_id,
+            "role": "customer",
+            "linked_admin_id": current_user.id,
+        }
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collaborator not found or not linked to your account.",
+        )

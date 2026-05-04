@@ -1,7 +1,7 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.collection import Collection
 
 from app.api.deps import (
@@ -11,9 +11,13 @@ from app.api.deps import (
     get_installment_collection,
     get_village_collection,
 )
+from app.core.finance_scope import villages_mongo_filter
 from app.models.finance import (
     CollectionRecordCreate,
     CollectionRecordPublic,
+    CollectionTimeseriesPoint,
+    CollectionTransactionRow,
+    CollectionsReportResponse,
     CustomerCreate,
     CustomerDetailResponse,
     CustomerPublic,
@@ -24,9 +28,12 @@ from app.models.finance import (
     VillagePublic,
     VillageUpdate,
 )
+from app.core.subscription_catalog import customer_limit_for_tier
 from app.models.user import UserInDB
 
 router = APIRouter(tags=["finance"])
+
+_VALID_PAYMENT_MODES = ("phonepe", "gpay", "cash")
 
 
 def _effective_owner_id(user: UserInDB) -> str:
@@ -44,12 +51,20 @@ def _require_write_access(user: UserInDB) -> None:
             detail="Collaborator accounts can view data but cannot create, edit or delete.",
         )
 
+def _village_finance_scope(document: dict) -> str:
+    raw = document.get("finance_scope")
+    if raw in ("daily", "weekly", "monthly", "yearly"):
+        return raw
+    return "weekly"
+
+
 def _serialize_village(document: dict, customer_count: int = 0) -> VillagePublic:
     return VillagePublic(
         id=str(document["_id"]),
         owner_user_id=document["owner_user_id"],
         name=document["name"],
         day=document["day"],
+        finance_scope=_village_finance_scope(document),
         customer_count=customer_count,
     )
 
@@ -72,6 +87,12 @@ def _serialize_customer(document: dict) -> CustomerPublic:
         external_customer_id=document["external_customer_id"],
         overdue_installments=int(document.get("overdue_installments", 0)),
         overdue_amount=float(document.get("overdue_amount", 0)),
+        due_this_month_installments=int(document.get("due_this_month_installments", 0)),
+        due_this_month_amount=float(document.get("due_this_month_amount", 0)),
+        due_this_year_installments=int(document.get("due_this_year_installments", 0)),
+        due_this_year_amount=float(document.get("due_this_year_amount", 0)),
+        due_today_installments=int(document.get("due_today_installments", 0)),
+        due_today_amount=float(document.get("due_today_amount", 0)),
         total_collected=float(document.get("total_collected", 0)),
         last_collected_at=document.get("last_collected_at"),
         last_collected_by_name=document.get("last_collected_by_name"),
@@ -127,8 +148,13 @@ def _group_collection_history(collection_history: list[dict]) -> list[Collection
     return [_serialize_collection_record(grouped_record) for grouped_record in sorted_grouped_records]
 
 
+def _installment_due_date(document: dict) -> date:
+    due = document["due_date"]
+    return due.date() if isinstance(due, datetime) else due
+
+
 def _is_installment_overdue(document: dict, now: datetime) -> bool:
-    return document.get("status") != "paid" and document["due_date"].date() < now.date()
+    return document.get("status") != "paid" and _installment_due_date(document) < now.date()
 
 
 def _build_customer_metrics(
@@ -141,6 +167,12 @@ def _build_customer_metrics(
         customer_id: {
             "overdue_installments": 0,
             "overdue_amount": 0.0,
+            "due_this_month_installments": 0,
+            "due_this_month_amount": 0.0,
+            "due_this_year_installments": 0,
+            "due_this_year_amount": 0.0,
+            "due_today_installments": 0,
+            "due_today_amount": 0.0,
             "total_collected": 0.0,
             "last_collected_at": None,
             "last_collected_by_name": None,
@@ -176,6 +208,20 @@ def _build_customer_metrics(
             metric["overdue_installments"] = int(metric["overdue_installments"]) + 1
             metric["overdue_amount"] = float(metric["overdue_amount"]) + max(amount_due - amount_paid, 0)
 
+        status = str(installment.get("status", "pending"))
+        remaining = max(amount_due - amount_paid, 0)
+        if remaining > 0 and status in {"pending", "partial"}:
+            d_only = _installment_due_date(installment)
+            if d_only.year == now.year and d_only.month == now.month:
+                metric["due_this_month_installments"] = int(metric["due_this_month_installments"]) + 1
+                metric["due_this_month_amount"] = float(metric["due_this_month_amount"]) + remaining
+            if d_only.year == now.year:
+                metric["due_this_year_installments"] = int(metric["due_this_year_installments"]) + 1
+                metric["due_this_year_amount"] = float(metric["due_this_year_amount"]) + remaining
+            if d_only == now.date():
+                metric["due_today_installments"] = int(metric["due_today_installments"]) + 1
+                metric["due_today_amount"] = float(metric["due_today_amount"]) + remaining
+
     for record in collection_documents:
         customer_id = record["customer_id"]
         metric = metrics.get(customer_id)
@@ -192,6 +238,12 @@ def _enrich_customer(document: dict, metrics: dict[str, object] | None = None) -
     metrics = metrics or {}
     payload["overdue_installments"] = int(metrics.get("overdue_installments", 0))
     payload["overdue_amount"] = float(metrics.get("overdue_amount", 0))
+    payload["due_this_month_installments"] = int(metrics.get("due_this_month_installments", 0))
+    payload["due_this_month_amount"] = float(metrics.get("due_this_month_amount", 0))
+    payload["due_this_year_installments"] = int(metrics.get("due_this_year_installments", 0))
+    payload["due_this_year_amount"] = float(metrics.get("due_this_year_amount", 0))
+    payload["due_today_installments"] = int(metrics.get("due_today_installments", 0))
+    payload["due_today_amount"] = float(metrics.get("due_today_amount", 0))
     payload["total_collected"] = float(metrics.get("total_collected", 0))
     payload["last_collected_at"] = metrics.get("last_collected_at")
     payload["last_collected_by_name"] = metrics.get("last_collected_by_name")
@@ -279,14 +331,20 @@ def _create_installments_for_customer(
         installment_collection.insert_many(documents)
 
 
+_FINANCE_SCOPES = frozenset({"daily", "weekly", "monthly", "yearly"})
+
+
 @router.get("/villages", response_model=list[VillagePublic])
 def list_villages(
     current_user: UserInDB = Depends(get_current_user),
     village_collection: Collection = Depends(get_village_collection),
     customer_collection: Collection = Depends(get_customer_collection),
+    finance_scope: str = Query(default="weekly", description="Workspace filter: daily|weekly|monthly|yearly"),
 ) -> list[VillagePublic]:
     owner_id = _effective_owner_id(current_user)
-    villages = list(village_collection.find({"owner_user_id": owner_id}).sort("day", 1))
+    if finance_scope not in _FINANCE_SCOPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid finance_scope")
+    villages = list(village_collection.find(villages_mongo_filter(owner_id, finance_scope)).sort("day", 1))
     results: list[VillagePublic] = []
 
     for village in villages:
@@ -312,6 +370,7 @@ def create_village(
         "owner_user_id": current_user.id,
         "name": payload.name.strip(),
         "day": payload.day.strip(),
+        "finance_scope": payload.finance_scope,
         "created_at": now,
         "updated_at": now,
     }
@@ -391,6 +450,27 @@ def create_customer(
     if village is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Village not found")
 
+    if current_user.subscription_tier == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "message": "Choose a plan before adding customers.",
+                "code": "SUBSCRIPTION_REQUIRED",
+            },
+        )
+    limit = customer_limit_for_tier(current_user.subscription_tier)
+    existing_count = customer_collection.count_documents({"owner_user_id": current_user.id})
+    if existing_count >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "message": "You have reached the customer limit for your plan. Upgrade to add more customers.",
+                "code": "CUSTOMER_LIMIT_REACHED",
+                "used": existing_count,
+                "limit": limit,
+            },
+        )
+
     now = datetime.now(UTC)
     customer_id = f"cus-{uuid4().hex[:12]}"
     document = {
@@ -451,24 +531,13 @@ def get_customer_detail(
     paid = sum(1 for item in installments if item["status"] == "paid")
     skipped = sum(1 for item in installments if item["status"] == "skipped")
     left = sum(1 for item in installments if item["status"] in {"pending", "partial"})
-    overdue_installments = sum(1 for item in installments if _is_installment_overdue(item, now))
-    overdue_amount = sum(max(float(item["amount_due"]) - float(item.get("amount_paid", 0)), 0) for item in installments if _is_installment_overdue(item, now))
-    total_collected = sum(float(item.get("amount_paid", 0)) for item in installments)
-    last_collection = collection_history[0] if collection_history else None
+    metrics_by_customer = _build_customer_metrics(owner_id, [customer_id], installment_collection, collection_record_collection)
+    m = metrics_by_customer.get(customer_id, {})
+    overdue_installments = int(m.get("overdue_installments", 0))
+    overdue_amount = float(m.get("overdue_amount", 0))
 
     return CustomerDetailResponse(
-        customer=_serialize_customer(
-            _enrich_customer(
-                customer,
-                {
-                    "overdue_installments": overdue_installments,
-                    "overdue_amount": overdue_amount,
-                    "total_collected": total_collected,
-                    "last_collected_at": last_collection.get("collected_at") if last_collection else None,
-                    "last_collected_by_name": last_collection.get("collected_by_name") if last_collection else None,
-                },
-            )
-        ),
+        customer=_serialize_customer(_enrich_customer(customer, m)),
         installments_paid=paid,
         installments_left=left,
         installments_skipped=skipped,
@@ -624,6 +693,157 @@ def collect_installment_payment(
     if response_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No payment could be allocated.")
     return _serialize_collection_record(response_record)
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+@router.get("/collections/report", response_model=CollectionsReportResponse)
+def collections_report(
+    finance_scope: str = Query(default="weekly"),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    village_id: str | None = Query(default=None),
+    customer_id: str | None = Query(default=None),
+    payment_mode: str | None = Query(default=None),
+    current_user: UserInDB = Depends(get_current_user),
+    village_collection: Collection = Depends(get_village_collection),
+    customer_collection: Collection = Depends(get_customer_collection),
+    collection_record_collection: Collection = Depends(get_collection_record_collection),
+) -> CollectionsReportResponse:
+    """Aggregated collections by day (line chart) and per-batch rows with optional filters."""
+    owner_id = _effective_owner_id(current_user)
+    allowed_scopes = {"daily", "weekly", "monthly", "yearly"}
+    if finance_scope not in allowed_scopes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid finance_scope")
+
+    today = datetime.now(UTC).date()
+    end_day = date_to or today
+    start_day = date_from or (end_day - timedelta(days=29))
+    if start_day > end_day:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date_from must be on or before date_to")
+
+    village_ids = [str(document["_id"]) for document in village_collection.find(villages_mongo_filter(owner_id, finance_scope), {"_id": 1})]
+    if not village_ids:
+        return CollectionsReportResponse(total_amount=0.0, transaction_count=0, series=[], transactions=[])
+
+    if village_id is not None:
+        if village_id not in village_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Village not found")
+        allowed_village_ids = [village_id]
+    else:
+        allowed_village_ids = village_ids
+
+    start_dt = datetime.combine(start_day, time.min, tzinfo=UTC)
+    end_dt = datetime.combine(end_day, time(23, 59, 59, 999999), tzinfo=UTC)
+
+    match_filter: dict = {
+        "owner_user_id": owner_id,
+        "village_id": {"$in": allowed_village_ids},
+        "collected_at": {"$gte": start_dt, "$lte": end_dt},
+    }
+
+    if customer_id is not None:
+        customer = customer_collection.find_one({"_id": customer_id, "owner_user_id": owner_id})
+        if customer is None or str(customer["village_id"]) not in allowed_village_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+        match_filter["customer_id"] = customer_id
+
+    if payment_mode is not None:
+        if payment_mode not in _VALID_PAYMENT_MODES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payment_mode")
+        match_filter["payment_mode"] = payment_mode
+
+    pipeline = [
+        {"$match": match_filter},
+        {
+            "$group": {
+                "_id": "$collection_batch_id",
+                "collected_at": {"$max": "$collected_at"},
+                "amount_paid": {"$sum": "$amount_paid"},
+                "village_id": {"$first": "$village_id"},
+                "customer_id": {"$first": "$customer_id"},
+                "payment_mode": {"$first": "$payment_mode"},
+                "collected_by_name": {"$first": "$collected_by_name"},
+                "note": {"$first": "$note"},
+            }
+        },
+        {"$sort": {"collected_at": -1}},
+        {"$limit": 500},
+    ]
+    grouped = list(collection_record_collection.aggregate(pipeline))
+
+    by_day: dict[str, float] = {}
+    by_day_count: dict[str, int] = {}
+    total_amount = 0.0
+
+    customer_ids = sorted({str(row["customer_id"]) for row in grouped})
+    village_id_set = sorted({str(row["village_id"]) for row in grouped})
+
+    customer_docs = (
+        list(customer_collection.find({"_id": {"$in": customer_ids}}, {"full_name": 1})) if customer_ids else []
+    )
+    village_docs = (
+        list(village_collection.find({"_id": {"$in": village_id_set}}, {"name": 1})) if village_id_set else []
+    )
+
+    customer_names = {str(doc["_id"]): str(doc.get("full_name", "")) for doc in customer_docs}
+    village_names = {str(doc["_id"]): str(doc.get("name", "")) for doc in village_docs}
+
+    transactions: list[CollectionTransactionRow] = []
+    for row in grouped:
+        cat_raw = row["collected_at"]
+        cat = _ensure_utc(cat_raw) if isinstance(cat_raw, datetime) else datetime.now(UTC)
+        day_key = cat.date().isoformat()
+
+        amt = float(row["amount_paid"])
+        total_amount += amt
+        by_day[day_key] = by_day.get(day_key, 0.0) + amt
+        by_day_count[day_key] = by_day_count.get(day_key, 0) + 1
+
+        cid = str(row["customer_id"])
+        vid = str(row["village_id"])
+        mode = row["payment_mode"]
+        if mode not in _VALID_PAYMENT_MODES:
+            mode = "cash"
+
+        transactions.append(
+            CollectionTransactionRow(
+                id=str(row["_id"]),
+                collected_at=cat,
+                amount_paid=amt,
+                payment_mode=mode,  # type: ignore[arg-type]
+                collected_by_name=str(row.get("collected_by_name", "")),
+                customer_id=cid,
+                customer_full_name=customer_names.get(cid, cid),
+                village_id=vid,
+                village_name=village_names.get(vid, vid),
+                note=row.get("note"),
+            )
+        )
+
+    series: list[CollectionTimeseriesPoint] = []
+    cursor_day = start_day
+    while cursor_day <= end_day:
+        key = cursor_day.isoformat()
+        series.append(
+            CollectionTimeseriesPoint(
+                date=cursor_day,
+                amount=float(by_day.get(key, 0.0)),
+                count=int(by_day_count.get(key, 0)),
+            )
+        )
+        cursor_day += timedelta(days=1)
+
+    return CollectionsReportResponse(
+        total_amount=total_amount,
+        transaction_count=len(transactions),
+        series=series,
+        transactions=transactions,
+    )
 
 
 @router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
