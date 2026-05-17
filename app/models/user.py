@@ -9,6 +9,12 @@ SubscriptionTier = Literal["pending", "free", "solo", "starter", "growth", "busi
 BillingPeriod = Literal["monthly", "yearly"]
 
 
+class WorkerPermissions(BaseModel):
+    hide_financials: bool = False
+    allowed_days: list[str] = []
+    allowed_village_ids: list[str] = []
+
+
 class LoginRequest(BaseModel):
     identifier: str = Field(min_length=3, description="Email address or phone number")
     password: str = Field(min_length=6)
@@ -41,6 +47,7 @@ class UserPublic(BaseModel):
     collaborator_usage_used: int = 0
     collaborator_usage_limit: int = 0
     subscription_expires_at: Optional[datetime] = None
+    worker_permissions: WorkerPermissions = Field(default_factory=WorkerPermissions)
 
 
 class AuthResponse(BaseModel):
@@ -91,6 +98,7 @@ class DashboardResponse(BaseModel):
     collaborator_usage_used: int = 0
     collaborator_usage_limit: int = 0
     subscription_expires_at: Optional[datetime] = None
+    financials_hidden: bool = False
     summary: list[DashboardSummaryMetric]
     daily_cards: list[DashboardDailyCard]
     finance_book_performance: list[DashboardFinanceBookPerformance] = []
@@ -124,6 +132,7 @@ class UserInDB(BaseModel):
     subscription_tier: SubscriptionTier = "pending"
     billing_period: Optional[BillingPeriod] = None
     subscription_expires_at: Optional[datetime] = None
+    worker_permissions: WorkerPermissions = Field(default_factory=WorkerPermissions)
 
     @classmethod
     def from_mongo(cls, document: dict[str, Any]) -> "UserInDB":
@@ -141,4 +150,6 @@ class UserInDB(BaseModel):
             payload["subscription_expires_at"] = None
         if "allow_collaborators" not in document:
             payload["allow_collaborators"] = True
+        if "worker_permissions" not in document:
+            payload["worker_permissions"] = {}
         return cls.model_validate(payload)

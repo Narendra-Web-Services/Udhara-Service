@@ -406,6 +406,56 @@ def dashboard(
     if finance_scope not in _FINANCE_SCOPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid finance_scope")
     owner_id = current_user.linked_admin_id if (current_user.role == "customer" and current_user.linked_admin_id) else current_user.id
+
+    hide_financials = (
+        current_user.role == "customer"
+        and current_user.linked_admin_id is not None
+        and current_user.worker_permissions.hide_financials
+    )
+
+    usage = subscription_usage_for_dashboard(current_user, user_collection, customer_collection)
+
+    if hide_financials:
+        # Return navigation-only dashboard: day tabs still present so worker can reach villages,
+        # but all financial values are zeroed and summary/performance sections are empty.
+        daily_cards, _, _ = _build_daily_values(
+            village_collection,
+            customer_collection,
+            installment_collection,
+            collection_record_collection,
+            owner_id,
+            finance_scope,
+        )
+        # Blank out financial values on each day card
+        blank_cards = [
+            DashboardDailyCard(
+                day=card.day,
+                invested="—",
+                returns="—",
+                profit_or_loss="—",
+                tone="neutral",
+            )
+            for card in daily_cards
+        ]
+        return DashboardResponse(
+            message=f"Welcome back, {current_user.full_name}.",
+            user_id=current_user.id,
+            role=current_user.role,
+            has_subscription=usage["has_subscription"],
+            subscription_tier=usage["subscription_tier"],
+            billing_period=usage["billing_period"],
+            customer_usage_used=usage["customer_usage_used"],
+            customer_usage_limit=usage["customer_usage_limit"],
+            subscription_expires_at=usage["subscription_expires_at"],
+            financials_hidden=True,
+            summary=[],
+            daily_cards=blank_cards,
+            finance_book_performance=[],
+            attention_required_count=0,
+            overdue_amount="₹0",
+            delayed_customers=[],
+        )
+
     daily_cards, invested_total, returns_total = _build_daily_values(
         village_collection,
         customer_collection,
@@ -430,7 +480,6 @@ def dashboard(
         owner_id,
     )
 
-    usage = subscription_usage_for_dashboard(current_user, user_collection, customer_collection)
     return DashboardResponse(
         message=f"Welcome back, {current_user.full_name}.",
         user_id=current_user.id,
@@ -441,6 +490,7 @@ def dashboard(
         customer_usage_used=usage["customer_usage_used"],
         customer_usage_limit=usage["customer_usage_limit"],
         subscription_expires_at=usage["subscription_expires_at"],
+        financials_hidden=False,
         summary=_build_summary(invested_total, returns_total),
         daily_cards=daily_cards,
         finance_book_performance=finance_book_performance,
