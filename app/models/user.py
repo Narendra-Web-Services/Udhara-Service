@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.finance import DelayedCustomerPublic
 
-SubscriptionTier = Literal["pending", "free", "basic", "pro", "elite", "unlimited"]
+SubscriptionTier = Literal["pending", "free", "solo", "starter", "growth", "business", "enterprise"]
 BillingPeriod = Literal["monthly", "yearly"]
 
 
@@ -38,6 +38,8 @@ class UserPublic(BaseModel):
     billing_period: Optional[BillingPeriod] = None
     customer_usage_used: int = 0
     customer_usage_limit: int = 2
+    collaborator_usage_used: int = 0
+    collaborator_usage_limit: int = 0
     subscription_expires_at: Optional[datetime] = None
 
 
@@ -86,6 +88,8 @@ class DashboardResponse(BaseModel):
     billing_period: Optional[BillingPeriod] = None
     customer_usage_used: int = 0
     customer_usage_limit: int = 2
+    collaborator_usage_used: int = 0
+    collaborator_usage_limit: int = 0
     subscription_expires_at: Optional[datetime] = None
     summary: list[DashboardSummaryMetric]
     daily_cards: list[DashboardDailyCard]
@@ -93,6 +97,15 @@ class DashboardResponse(BaseModel):
     attention_required_count: int = 0
     overdue_amount: str = "₹0"
     delayed_customers: list[DelayedCustomerPublic] = []
+
+
+# Legacy paid tier names that may exist in old DB records.
+_LEGACY_TIER_MAP: dict[str, str] = {
+    "basic": "growth",
+    "pro": "business",
+    "elite": "enterprise",
+    "unlimited": "enterprise",
+}
 
 
 class UserInDB(BaseModel):
@@ -116,8 +129,10 @@ class UserInDB(BaseModel):
     def from_mongo(cls, document: dict[str, Any]) -> "UserInDB":
         payload = {**document, "_id": str(document["_id"])}
         if "subscription_tier" not in document:
-            payload["subscription_tier"] = "unlimited" if document.get("has_subscription") else "pending"
+            payload["subscription_tier"] = "enterprise" if document.get("has_subscription") else "pending"
         tier = str(payload.get("subscription_tier", "pending"))
+        # Migrate legacy tier names transparently.
+        tier = _LEGACY_TIER_MAP.get(tier, tier)
         payload["subscription_tier"] = tier  # type: ignore[assignment]
         payload["has_subscription"] = tier != "pending"
         if "billing_period" not in document:

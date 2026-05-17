@@ -4,7 +4,8 @@ from uuid import uuid4
 
 from app.api.deps import get_customer_collection, get_user_collection
 from app.core.security import create_access_token, hash_password, verify_password
-from app.core.access_profile import build_user_public
+from app.core.access_profile import build_user_public, subscription_is_active
+from app.core.subscription_catalog import collaborator_limit_for_tier, LEGACY_TIER_MAP
 from app.models.user import AuthResponse, RegisterRequest, UserInDB
 
 router = APIRouter(prefix="/register", tags=["register"])
@@ -18,6 +19,7 @@ def list_admins(collection: Collection = Depends(get_user_collection)) -> list[d
         {"_id": 1, "full_name": 1, "phone_number": 1},
     )
     return [{"id": str(d["_id"]), "full_name": d["full_name"], "phone_number": d.get("phone_number", "")} for d in docs]
+
 
 @router.post("", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(
@@ -37,12 +39,12 @@ def register(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This email is already registered.")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This phone number is already registered.")
 
-    # For Normal users linked to an admin, verify the admin's password
+    # For workers linked to an admin, verify the admin password and enforce plan limits.
     if payload.role == "customer" and payload.linked_admin_id:
         if not payload.admin_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Admin password is required to register as a collaborator.",
+                detail="Admin password is required to register as a worker.",
             )
         admin_doc = collection.find_one({"_id": payload.linked_admin_id, "role": "admin"})
         if admin_doc is None:
@@ -53,12 +55,40 @@ def register(
         if not admin_doc.get("allow_collaborators", True):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This admin is not accepting new collaborators.",
+                detail="This admin is not accepting new workers.",
             )
         if not verify_password(payload.admin_password, admin_doc["hashed_password"]):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Admin password is incorrect. Please ask your admin for the correct password.",
+            )
+
+        # Check admin subscription is active (expired owners cannot add workers).
+        admin_user = UserInDB.from_mongo(admin_doc)
+        if not subscription_is_active(admin_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The admin's subscription has expired. Ask your admin to renew before adding workers.",
+            )
+
+        # Enforce worker (collaborator) limit for the admin's current plan.
+        admin_tier = LEGACY_TIER_MAP.get(admin_user.subscription_tier, admin_user.subscription_tier)
+        collab_limit = collaborator_limit_for_tier(admin_tier)
+        if collab_limit == 0:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The admin's current plan does not support adding workers. They need to upgrade.",
+            )
+        current_collab_count = collection.count_documents(
+            {"role": "customer", "linked_admin_id": payload.linked_admin_id}
+        )
+        if current_collab_count >= collab_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"This admin has reached the worker limit ({collab_limit}) for their current plan. "
+                    "Ask your admin to upgrade to add more workers."
+                ),
             )
 
     new_session_id = str(uuid4())
