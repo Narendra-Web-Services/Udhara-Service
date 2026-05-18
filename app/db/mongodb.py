@@ -3,6 +3,7 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.errors import OperationFailure, PyMongoError
 
+from pymongo import ASCENDING
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -35,6 +36,7 @@ villages_collection: Collection = database["villages"]
 customers_collection: Collection = database["customers"]
 installments_collection: Collection = database["installments"]
 collections_collection: Collection = database["collections"]
+otp_collection: Collection = database["password_reset_otps"]
 
 
 def ensure_finance_indexes() -> None:
@@ -44,6 +46,7 @@ def ensure_finance_indexes() -> None:
 	installments_collection.create_index([("owner_user_id", 1), ("customer_id", 1), ("due_date", 1)])
 	collections_collection.create_index([("owner_user_id", 1), ("customer_id", 1), ("collected_at", -1)])
 	collections_collection.create_index([("installment_id", 1), ("collected_at", -1)])
+	otp_collection.create_index("expires_at", expireAfterSeconds=0)  # TTL index — Mongo auto-deletes expired OTPs
 
 
 ensure_finance_indexes()

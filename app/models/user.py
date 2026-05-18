@@ -20,11 +20,6 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=6)
 
 
-class ForgotPasswordRequest(BaseModel):
-    firebase_id_token: str
-    new_password: str = Field(min_length=6)
-
-
 class RegisterRequest(BaseModel):
     user_id: str = Field(min_length=3)
     full_name: str = Field(min_length=2)

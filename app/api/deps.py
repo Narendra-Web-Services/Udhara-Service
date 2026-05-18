@@ -4,7 +4,7 @@ from jose import JWTError, jwt
 from pymongo.collection import Collection
 
 from app.core.config import get_settings
-from app.db.mongodb import collections_collection, customers_collection, installments_collection, users_collection, villages_collection
+from app.db.mongodb import collections_collection, customers_collection, installments_collection, otp_collection, users_collection, villages_collection
 from app.models.user import UserInDB
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -28,6 +28,10 @@ def get_installment_collection() -> Collection:
 
 def get_collection_record_collection() -> Collection:
     return collections_collection
+
+
+def get_otp_collection() -> Collection:
+    return otp_collection
 
 
 def get_current_user(

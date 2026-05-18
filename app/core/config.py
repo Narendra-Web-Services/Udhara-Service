@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8080, alias="API_PORT")
     razorpay_key_id: str = Field(alias="RAZORPAY_KEY_ID")
     razorpay_key_secret: str = Field(alias="RAZORPAY_KEY_SECRET")
+    brevo_api_key: str = Field(alias="BREVO_API_KEY")
     # cors_origins: str = Field(default="http://localhost:8081,http://localhost:19006,http://localhost:3000", alias="CORS_ORIGINS")
 
     # @property
