@@ -4,7 +4,7 @@ import urllib.request
 from app.core.config import get_settings
 
 _BREVO_URL = "https://api.brevo.com/v3/smtp/email"
-_FROM_EMAIL = "noreply@udhara.app"
+_FROM_EMAIL = "narendrareddykarri11@gmail.com"
 _FROM_NAME = "Udhara"
 
 
