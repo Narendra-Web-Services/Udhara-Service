@@ -6,9 +6,10 @@ from uuid import uuid4
 
 from app.api.deps import get_customer_collection, get_user_collection
 from app.core.access_profile import build_user_public
-from app.core.security import create_access_token, verify_password
+from app.core.firebase import verify_firebase_token
+from app.core.security import create_access_token, hash_password, verify_password
 from app.core.config import get_settings
-from app.models.user import AuthResponse, LoginRequest, UserInDB
+from app.models.user import AuthResponse, ForgotPasswordRequest, LoginRequest, UserInDB
 
 router = APIRouter(prefix="/login", tags=["login"])
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -87,3 +88,30 @@ def refresh_session(
         access_token=token,
         user=build_user_public(user, collection, customer_collection),
     )
+
+
+@router.post("/forgot-password")
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    collection: Collection = Depends(get_user_collection),
+) -> dict:
+    try:
+        decoded = verify_firebase_token(payload.firebase_id_token)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired verification token")
+
+    phone = decoded.get("phone_number", "")
+    if not phone:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number not found in token")
+
+    # Firebase returns E.164 format e.g. +919876543210 — take last 10 digits
+    local_phone = phone[-10:]
+    document = collection.find_one({"phone_number": local_phone})
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this phone number")
+
+    collection.update_one(
+        {"_id": document["_id"]},
+        {"$set": {"hashed_password": hash_password(payload.new_password)}},
+    )
+    return {"message": "Password reset successfully"}
