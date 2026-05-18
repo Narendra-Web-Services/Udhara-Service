@@ -4,8 +4,8 @@ import urllib.request
 from app.core.config import get_settings
 
 _BREVO_URL = "https://api.brevo.com/v3/smtp/email"
-_FROM_EMAIL = "narendrareddykarri11@gmail.com"
-_FROM_NAME = "Udhara"
+_FROM_EMAIL = "narendrawebservices@gmail.com"
+_FROM_NAME = "Narendra Web Services"
 
 
 def send_otp_email(to_email: str, otp: str, full_name: str) -> None:
