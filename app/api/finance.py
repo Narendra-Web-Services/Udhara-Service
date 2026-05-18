@@ -595,12 +595,11 @@ def list_villages(
 
     query = villages_mongo_filter(owner_id, finance_scope)
 
-    # Apply worker restrictions if the caller is a collaborator
+    # Apply worker restrictions — empty list means deny all (explicit grant required)
     if current_user.role == "customer" and current_user.linked_admin_id:
         perms = current_user.worker_permissions
-        if perms.allowed_village_ids:
-            query["_id"] = {"$in": perms.allowed_village_ids}
-        if perms.allowed_days and finance_scope == "weekly":
+        query["_id"] = {"$in": perms.allowed_village_ids}
+        if finance_scope == "weekly":
             query["day"] = {"$in": perms.allowed_days}
 
     villages = list(village_collection.find(query).sort("day", 1))

@@ -10,7 +10,7 @@ BillingPeriod = Literal["monthly", "yearly"]
 
 
 class WorkerPermissions(BaseModel):
-    hide_financials: bool = False
+    hide_financials: bool = True
     allowed_days: list[str] = []
     allowed_village_ids: list[str] = []
 
