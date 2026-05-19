@@ -50,8 +50,7 @@ def send_otp(
 ) -> dict:
     document = _find_user(payload.identifier, user_collection)
     if not document:
-        # Return success even if user not found to avoid user enumeration
-        return {"message": "If an account exists, an OTP has been sent to the registered email."}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email or phone number.")
 
     otp = _generate_otp()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
