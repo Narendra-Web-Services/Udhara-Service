@@ -684,6 +684,9 @@ def list_customers_for_village(
     collection_record_collection: Collection = Depends(get_collection_record_collection),
 ) -> list[CustomerPublic]:
     owner_id = _effective_owner_id(current_user)
+    if current_user.role == "customer" and current_user.linked_admin_id:
+        if village_id not in current_user.worker_permissions.allowed_village_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access to this village is not permitted.")
     documents = list(customer_collection.find({"owner_user_id": owner_id, "village_id": village_id}).sort("created_at", -1))
     metrics_by_customer = _build_customer_metrics(
         owner_id,
@@ -1121,6 +1124,12 @@ def collections_report(
         village_query = {"owner_user_id": owner_id, "$or": scope_filters} if scope_filters else {"owner_user_id": owner_id}
     village_ids = [str(document["_id"]) for document in village_collection.find(village_query, {"_id": 1})]
     all_owner_village_ids = [str(document["_id"]) for document in village_collection.find({"owner_user_id": owner_id}, {"_id": 1})]
+
+    # Apply worker village restrictions — only show data for allowed villages
+    if current_user.role == "customer" and current_user.linked_admin_id:
+        allowed = set(current_user.worker_permissions.allowed_village_ids)
+        village_ids = [vid for vid in village_ids if vid in allowed]
+        all_owner_village_ids = [vid for vid in all_owner_village_ids if vid in allowed]
     empty_facets = CollectionsReportFacets(finance_scopes=[], villages=[], customers=[], payment_modes=[])
     if not village_ids:
         return CollectionsReportResponse(

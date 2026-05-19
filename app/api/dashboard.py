@@ -178,8 +178,11 @@ def _build_daily_values(
     collection_record_collection: Collection,
     owner_id: str,
     finance_scope: str,
+    allowed_village_ids: list[str] | None = None,
 ) -> tuple[list[DashboardDailyCard], int, int]:
     village_query = {"owner_user_id": owner_id} if finance_scope == "all" else villages_mongo_filter(owner_id, finance_scope)
+    if allowed_village_ids is not None:
+        village_query["_id"] = {"$in": allowed_village_ids}
     village_documents = list(village_collection.find(village_query, {"_id": 1, "day": 1}))
     village_ids = [str(v["_id"]) for v in village_documents]
     if not village_ids:
@@ -407,11 +410,10 @@ def dashboard(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid finance_scope")
     owner_id = current_user.linked_admin_id if (current_user.role == "customer" and current_user.linked_admin_id) else current_user.id
 
-    hide_financials = (
-        current_user.role == "customer"
-        and current_user.linked_admin_id is not None
-        and current_user.worker_permissions.hide_financials
-    )
+    is_worker = current_user.role == "customer" and current_user.linked_admin_id is not None
+    worker_allowed_village_ids = current_user.worker_permissions.allowed_village_ids if is_worker else None
+
+    hide_financials = is_worker and current_user.worker_permissions.hide_financials
 
     usage = subscription_usage_for_dashboard(current_user, user_collection, customer_collection)
 
@@ -425,6 +427,7 @@ def dashboard(
             collection_record_collection,
             owner_id,
             finance_scope,
+            worker_allowed_village_ids,
         )
         # Blank out financial values on each day card
         blank_cards = [
@@ -463,6 +466,7 @@ def dashboard(
         collection_record_collection,
         owner_id,
         finance_scope,
+        worker_allowed_village_ids,
     )
     attention_required_count, overdue_amount, delayed_customers = _build_delay_summary(
         village_collection,
